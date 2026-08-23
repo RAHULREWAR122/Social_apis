@@ -13,7 +13,7 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
   WEB_APP_URL: z.string().default("https://social-marketing-software.vercel.app"),
-  API_BASE_URL: z.string().default("http://localhost:4100/api/v1"),
+  API_BASE_URL: z.string().default("https://social-apis.onrender.com/api/v1"),
 
   // 32-byte (64 hex char) key used to encrypt OAuth tokens at rest. Generate with:
   // node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -54,7 +54,7 @@ const envSchema = z.object({
   // publishing to Instagram/Facebook/LinkedIn requires this to be reachable over the public
   // internet (production deploy, or a tunnel for local testing) — see storage.ts.
   UPLOADS_DIR: z.string().default("uploads"),
-  API_ORIGIN: z.string().default("http://localhost:4100"),
+  API_ORIGIN: z.string().default("https://social-apis.onrender.com"),
 
   // Optional until an SMTP provider is configured — the platform's own transactional emails
   // (password reset codes, etc; see lib/mailer.ts) log to the server console instead of failing
