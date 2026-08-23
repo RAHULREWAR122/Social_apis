@@ -1,0 +1,626 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Phase 1: Foundation (auth, organizations, users) ---
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+  ANALYST
+}
+
+model User {
+  id                     String    @id @default(uuid())
+  email                  String    @unique
+  passwordHash           String
+  firstName              String?
+  lastName               String?
+  emailVerifiedAt         DateTime?
+  timezone               String    @default("UTC")
+  isActive               Boolean   @default(true)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  memberships            OrganizationMember[]
+  sessions               UserSession[]
+  passwordResetTokens    PasswordResetToken[]
+  passwordResetOtps      PasswordResetOtp[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  @@map("users")
+}
+
+model Organization {
+  id           String   @id @default(uuid())
+  name         String
+  businessType String?
+  country      String?
+  timezone     String   @default("UTC")
+  onboardingStep String @default("business_info") // business_info | connect_email | connect_whatsapp | import_contacts | done
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  members      OrganizationMember[]
+  contacts     Contact[]
+  contactLists ContactList[]
+  tags         Tag[]
+  suppressionEntries SuppressionListEntry[]
+  emailAccounts  EmailAccount[]
+  emailTemplates EmailTemplate[]
+  whatsappAccounts  WhatsAppAccount[]
+  whatsappTemplates WhatsAppTemplate[]
+  campaigns         Campaign[]
+  planName          String   @default("free") // free | starter | business | pro
+  planRenewsAt      DateTime? // paid plans only — lapses back to "free" if not renewed by this date
+  // A self-serve downgrade doesn't take effect immediately — it's deferred until planRenewsAt so
+  // the org keeps what it already paid for. ensurePlanCurrent() applies this once that date passes.
+  pendingPlanName   String?
+  payments          Payment[]
+  usageCounters     UsageCounter[]
+  socialAccounts    SocialAccount[]
+  media             Media[]
+  socialPosts       SocialPost[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String
+  role           OrgRole      @default(OWNER)
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@map("organization_members")
+}
+
+model UserSession {
+  id               String   @id @default(uuid())
+  userId           String
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime @default(now())
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
+}
+
+// The 6-digit code emailed to the user; verifying it mints a PasswordResetToken (above), which is
+// what actually authorizes the password change. Keeping these separate means the OTP itself is
+// never the credential used to change the password — a short, guessable 6-digit space is fine to
+// email, but not fine to accept indefinitely, hence the low `attempts` cap enforced in auth.service.
+model PasswordResetOtp {
+  id        String    @id @default(uuid())
+  userId    String
+  otpHash   String
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_otps")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_verification_tokens")
+}
+
+// --- Phase 2: Contacts, Lists, Tags ---
+
+enum ContactStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Contact {
+  id             String        @id @default(uuid())
+  organizationId String
+  firstName      String?
+  lastName       String?
+  email          String?
+  phone          String?
+  company        String?
+  city           String?
+  country        String?
+  source         String?
+  status         ContactStatus @default(ACTIVE)
+  emailOptIn     Boolean       @default(true)
+  whatsappOptIn  Boolean       @default(true)
+  customFields   Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  listMemberships ContactListMember[]
+  tags           ContactTag[]
+  campaignRecipients CampaignRecipient[]
+
+  @@unique([organizationId, email])
+  @@unique([organizationId, phone])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("contacts")
+}
+
+model ContactList {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members        ContactListMember[]
+  campaigns      Campaign[]
+
+  @@unique([organizationId, name])
+  @@map("contact_lists")
+}
+
+model ContactListMember {
+  id            String   @id @default(uuid())
+  contactListId String
+  contactId     String
+  addedAt       DateTime @default(now())
+
+  contactList   ContactList @relation(fields: [contactListId], references: [id], onDelete: Cascade)
+  contact       Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([contactListId, contactId])
+  @@map("contact_list_members")
+}
+
+model Tag {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contacts       ContactTag[]
+  campaigns      Campaign[]
+
+  @@unique([organizationId, name])
+  @@map("tags")
+}
+
+model ContactTag {
+  id        String @id @default(uuid())
+  contactId String
+  tagId     String
+
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, tagId])
+  @@map("contact_tags")
+}
+
+enum SuppressionReason {
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINT
+  MANUAL
+}
+
+model SuppressionListEntry {
+  id             String            @id @default(uuid())
+  organizationId String
+  email          String?
+  phone          String?
+  reason         SuppressionReason
+  createdAt      DateTime          @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, email])
+  @@index([organizationId, phone])
+  @@map("suppression_list")
+}
+
+// --- Phase 3: Email (Gmail OAuth, accounts, templates) ---
+
+enum EmailAccountStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+model EmailAccount {
+  id                     String             @id @default(uuid())
+  organizationId         String
+  provider               String             @default("gmail")
+  emailAddress           String
+  displayName            String?
+  accessTokenEncrypted   String
+  refreshTokenEncrypted  String
+  tokenExpiresAt         DateTime?
+  status                 EmailAccountStatus @default(CONNECTED)
+  lastVerifiedAt         DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns              Campaign[]
+
+  @@unique([organizationId, emailAddress])
+  @@map("email_accounts")
+}
+
+model EmailTemplate {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  subject        String
+  bodyHtml       String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns      Campaign[]
+
+  @@unique([organizationId, name])
+  @@map("email_templates")
+}
+
+// --- Phase 4: WhatsApp Business Platform ---
+
+enum WhatsAppAccountStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+model WhatsAppAccount {
+  id                   String                @id @default(uuid())
+  organizationId       String
+  businessAccountId    String
+  phoneNumberId        String
+  displayPhoneNumber   String
+  businessName         String?
+  accessTokenEncrypted String
+  status               WhatsAppAccountStatus @default(CONNECTED)
+  lastVerifiedAt       DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  templates            WhatsAppTemplate[]
+  campaigns            Campaign[]
+
+  @@unique([organizationId, phoneNumberId])
+  @@map("whatsapp_accounts")
+}
+
+enum WhatsAppTemplateStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DISABLED
+}
+
+model WhatsAppTemplate {
+  id                  String                 @id @default(uuid())
+  organizationId      String
+  whatsappAccountId   String
+  name                String
+  language            String                 @default("en_US")
+  bodyText            String
+  variableCount       Int                    @default(0)
+  status              WhatsAppTemplateStatus @default(APPROVED)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  organization        Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  whatsappAccount     WhatsAppAccount @relation(fields: [whatsappAccountId], references: [id], onDelete: Cascade)
+  campaigns           Campaign[]
+
+  @@unique([organizationId, name, language])
+  @@map("whatsapp_templates")
+}
+
+// --- Phase 3/4: Campaign engine (generic across channels) ---
+
+enum CampaignChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  PROCESSING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+  UNSUBSCRIBED
+}
+
+model Campaign {
+  id                  String         @id @default(uuid())
+  organizationId      String
+  name                String
+  channel             CampaignChannel
+  status              CampaignStatus @default(DRAFT)
+
+  // Audience: exactly one of listId/tagId should be set by the API layer for MVP.
+  listId              String?
+  tagId               String?
+
+  // Email channel fields
+  emailAccountId      String?
+  emailTemplateId     String?
+  subject             String?
+  bodyHtml            String?
+
+  // WhatsApp channel fields
+  whatsappAccountId   String?
+  whatsappTemplateId  String?
+  templateVariableMap Json?
+
+  scheduledAt         DateTime?
+  sentAt              DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organization        Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  list                ContactList?      @relation(fields: [listId], references: [id])
+  tag                 Tag?              @relation(fields: [tagId], references: [id])
+  emailAccount        EmailAccount?     @relation(fields: [emailAccountId], references: [id])
+  emailTemplate       EmailTemplate?    @relation(fields: [emailTemplateId], references: [id])
+  whatsappAccount     WhatsAppAccount?  @relation(fields: [whatsappAccountId], references: [id])
+  whatsappTemplate    WhatsAppTemplate? @relation(fields: [whatsappTemplateId], references: [id])
+  recipients          CampaignRecipient[]
+
+  @@index([organizationId, status])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id                String                  @id @default(uuid())
+  campaignId        String
+  contactId         String
+  status            CampaignRecipientStatus @default(PENDING)
+  providerMessageId String?
+  errorMessage      String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime                @default(now())
+
+  campaign          Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact           Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@map("campaign_recipients")
+}
+
+// --- Phase 5: Billing ---
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+  EXPIRED
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  organizationId  String
+  plan            String // starter | business | pro — the plan being purchased
+  amountPaise     Int // INR minor unit
+  currency        String        @default("INR")
+  cashfreeLinkId  String        @unique
+  status          PaymentStatus @default(CREATED)
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("payments")
+}
+
+// One row per organization/channel/calendar-month — tracks sends against the plan's monthly quota.
+model UsageCounter {
+  id             String          @id @default(uuid())
+  organizationId String
+  periodKey      String // "2026-08" (UTC calendar month)
+  channel        CampaignChannel
+  count          Int             @default(0)
+  updatedAt      DateTime        @updatedAt
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, periodKey, channel])
+  @@map("usage_counters")
+}
+
+// --- Phase 6: Social Publishing (Instagram, Facebook, LinkedIn) ---
+
+enum SocialPlatform {
+  INSTAGRAM
+  FACEBOOK
+  LINKEDIN_PERSONAL
+  LINKEDIN_ORGANIZATION
+}
+
+enum SocialAccountStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+// Facebook Pages and their linked Instagram Business accounts share one Page access token,
+// so an org connecting Meta typically gets two SocialAccount rows (FACEBOOK + INSTAGRAM) that
+// both hold the same underlying token — see meta.service.ts.
+model SocialAccount {
+  id                    String               @id @default(uuid())
+  organizationId        String
+  platform              SocialPlatform
+  externalAccountId     String // FB page id / IG business account id / LinkedIn person or org id
+  displayName           String?
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String? // LinkedIn personal only, when issued; null for Meta long-lived tokens
+  tokenExpiresAt        DateTime?
+  metadata              Json? // e.g. { facebookPageId, igUsername } | { organizationUrn }
+  status                SocialAccountStatus  @default(CONNECTED)
+  lastVerifiedAt        DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  postTargets           SocialPostTarget[]
+
+  @@unique([organizationId, platform, externalAccountId])
+  @@map("social_accounts")
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+model Media {
+  id              String    @id @default(uuid())
+  organizationId  String
+  storagePath     String // path relative to the storage root, e.g. "<orgId>/<uuid>-name.jpg"
+  publicUrl       String // absolute URL a provider fetches from, e.g. "${API_ORIGIN}/uploads/<storagePath>"
+  mimeType        String
+  mediaType       MediaType
+  fileSizeBytes   Int
+  width           Int?
+  height          Int?
+  durationSeconds Int?
+  createdAt       DateTime  @default(now())
+
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  postItems       SocialPostMedia[]
+
+  @@index([organizationId])
+  @@map("media")
+}
+
+enum SocialPostStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+model SocialPost {
+  id              String           @id @default(uuid())
+  organizationId  String
+  caption         String           @db.Text
+  status          SocialPostStatus @default(DRAFT)
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  createdByUserId String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  media           SocialPostMedia[]
+  targets         SocialPostTarget[]
+
+  @@index([organizationId, status])
+  @@map("social_posts")
+}
+
+// Ordered join between a post and its media — `position` drives carousel item order.
+model SocialPostMedia {
+  id           String @id @default(uuid())
+  socialPostId String
+  mediaId      String
+  position     Int
+
+  socialPost   SocialPost @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  media        Media      @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([socialPostId, mediaId])
+  @@unique([socialPostId, position])
+  @@map("social_post_media")
+}
+
+enum SocialPostTargetStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+}
+
+// One row per (post, connected account) — a single composed post can fan out to several
+// connected accounts/platforms at once, each tracked independently (mirrors CampaignRecipient).
+model SocialPostTarget {
+  id              String                 @id @default(uuid())
+  socialPostId    String
+  socialAccountId String
+  status          SocialPostTargetStatus @default(PENDING)
+  providerPostId  String?
+  errorMessage    String?
+  publishedAt     DateTime?
+  createdAt       DateTime               @default(now())
+
+  socialPost      SocialPost    @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([socialPostId, socialAccountId])
+  @@index([socialPostId, status])
+  @@map("social_post_targets")
+}
