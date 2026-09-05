@@ -158,7 +158,21 @@ async function assertSendable(organizationId: string, campaignId: string) {
   if (campaign.status !== "DRAFT") {
     throw new HttpError(409, `Campaign is already ${campaign.status.toLowerCase()}`);
   }
+  if (campaign.channel === "WHATSAPP") {
+    await assertTemplateApproved(campaign.whatsappTemplateId);
+  }
   return campaign;
+}
+
+async function assertTemplateApproved(whatsappTemplateId: string | null) {
+  if (!whatsappTemplateId) throw new HttpError(400, "Select a WhatsApp template before sending");
+  const template = await prisma.whatsAppTemplate.findUnique({ where: { id: whatsappTemplateId } });
+  if (!template || template.status !== "APPROVED") {
+    throw new HttpError(
+      400,
+      `WhatsApp template "${template?.name ?? whatsappTemplateId}" isn't approved by Meta yet — get it approved in Meta Business Manager, then mark it APPROVED here before sending.`,
+    );
+  }
 }
 
 export async function sendNow(organizationId: string, campaignId: string) {
@@ -262,6 +276,7 @@ export async function sendTest(
   if (!campaign.whatsappAccountId || !campaign.whatsappTemplate) {
     throw new HttpError(400, "Campaign has no WhatsApp account or template");
   }
+  await assertTemplateApproved(campaign.whatsappTemplate.id);
 
   const sample = { ...SAMPLE_CONTACT, phone: input.toPhone };
   const variables = resolveWhatsAppVariables(

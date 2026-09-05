@@ -2,9 +2,11 @@ import { Request, Response } from "express";
 import { env } from "../../config/env";
 import { HttpError } from "../../utils/http-error";
 import * as metaService from "./meta.service";
+import type { MetaVariant } from "./meta.service";
 
 export async function connectMeta(req: Request, res: Response) {
-  const url = await metaService.buildAuthUrl(req.auth!.organizationId);
+  const variant = (req.query.variant as MetaVariant) === "instagram" ? "instagram" : "facebook";
+  const url = await metaService.buildAuthUrl(req.auth!.organizationId, variant);
   res.json({ url });
 }
 

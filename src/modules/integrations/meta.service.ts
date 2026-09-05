@@ -7,17 +7,16 @@ import { HttpError } from "../../utils/http-error";
 import { decryptSecret, encryptSecret } from "../../utils/encryption";
 import { assertSocialFeatureAvailable } from "../billing/usage.service";
 
-// Covers both Facebook Page connection and Instagram Business discovery — same Meta app,
-// same Graph API. Instagram Business publishing is authenticated via the linked Page's
-// access token, there is no separate Instagram-only OAuth token.
-const META_SCOPES = [
-  "pages_show_list",
-  "pages_read_engagement",
-  "pages_manage_posts",
-  "instagram_basic",
-  "instagram_content_publish",
-  "business_management",
-].join(",");
+export type MetaVariant = "facebook" | "instagram";
+
+// Instagram Business publishing has no OAuth token of its own — it's always authenticated via
+// the linked Facebook Page's access token, so both variants still need Page-discovery scopes.
+// They diverge only on the product-specific permission: posting as the Page (Facebook) vs.
+// reading/publishing to its linked Instagram account (Instagram). Splitting these means a user
+// connecting Instagram alone isn't also asked to grant "manage your Page's posts", and vice versa.
+const PAGE_DISCOVERY_SCOPES = ["pages_show_list", "pages_read_engagement", "business_management"];
+const FACEBOOK_SCOPES = [...PAGE_DISCOVERY_SCOPES, "pages_manage_posts"];
+const INSTAGRAM_SCOPES = [...PAGE_DISCOVERY_SCOPES, "instagram_basic", "instagram_content_publish"];
 
 const CALLBACK_PATH = "/integrations/meta/callback";
 const GRAPH_BASE = `https://graph.facebook.com/${env.META_GRAPH_API_VERSION}`;
@@ -35,24 +34,24 @@ function redirectUri() {
   return `${env.API_BASE_URL}${CALLBACK_PATH}`;
 }
 
-export async function buildAuthUrl(organizationId: string) {
+export async function buildAuthUrl(organizationId: string, variant: MetaVariant) {
   await assertSocialFeatureAvailable(organizationId);
   assertMetaConfigured();
-  const state = jwt.sign({ organizationId }, env.JWT_ACCESS_SECRET, { expiresIn: "10m" });
+  const state = jwt.sign({ organizationId, variant }, env.JWT_ACCESS_SECRET, { expiresIn: "10m" });
 
   const params = new URLSearchParams({
     client_id: env.META_CLIENT_ID!,
     redirect_uri: redirectUri(),
     state,
-    scope: META_SCOPES,
+    scope: (variant === "instagram" ? INSTAGRAM_SCOPES : FACEBOOK_SCOPES).join(","),
   });
 
   return `https://www.facebook.com/${env.META_GRAPH_API_VERSION}/dialog/oauth?${params.toString()}`;
 }
 
-function verifyState(state: string): { organizationId: string } {
+function verifyState(state: string): { organizationId: string; variant: MetaVariant } {
   try {
-    return jwt.verify(state, env.JWT_ACCESS_SECRET) as { organizationId: string };
+    return jwt.verify(state, env.JWT_ACCESS_SECRET) as { organizationId: string; variant: MetaVariant };
   } catch {
     throw new HttpError(400, "This connection link has expired. Please try connecting again.");
   }
@@ -95,7 +94,7 @@ async function upsertSocialAccount(input: {
 }
 
 export async function handleCallback(code: string, state: string) {
-  const { organizationId } = verifyState(state);
+  const { organizationId, variant } = verifyState(state);
   assertMetaConfigured();
 
   // 1. Exchange the auth code for a short-lived user access token.
@@ -130,22 +129,33 @@ export async function handleCallback(code: string, state: string) {
     throw new HttpError(400, "No Facebook Pages found for this account. You need to manage at least one Page.");
   }
 
-  for (const page of pages) {
-    await upsertSocialAccount({
-      organizationId,
-      platform: "FACEBOOK",
-      externalAccountId: page.id,
-      displayName: page.name,
-      accessToken: page.access_token,
-    });
+  if (variant === "facebook") {
+    // pages_manage_posts was granted, not instagram_basic — save the Pages themselves and
+    // skip Instagram discovery, since we can't publish to an Instagram account without that scope.
+    for (const page of pages) {
+      await upsertSocialAccount({
+        organizationId,
+        platform: "FACEBOOK",
+        externalAccountId: page.id,
+        displayName: page.name,
+        accessToken: page.access_token,
+      });
+    }
+    return { organizationId };
+  }
 
-    // 4. Discover a linked Instagram Business account, if any, for this Page.
+  // variant === "instagram": instagram_basic/instagram_content_publish were granted, not
+  // pages_manage_posts — discover each Page's linked Instagram Business account and save only
+  // that, since we can't post to the Page itself with this token's permissions.
+  let foundInstagramAccount = false;
+  for (const page of pages) {
     const { data: pageDetails } = await axios.get(`${GRAPH_BASE}/${page.id}`, {
       params: { fields: "instagram_business_account{id,username}", access_token: page.access_token },
     });
 
     const igAccount = pageDetails.instagram_business_account;
     if (igAccount?.id) {
+      foundInstagramAccount = true;
       await upsertSocialAccount({
         organizationId,
         platform: "INSTAGRAM",
@@ -155,6 +165,13 @@ export async function handleCallback(code: string, state: string) {
         metadata: { facebookPageId: page.id, igUsername: igAccount.username },
       });
     }
+  }
+
+  if (!foundInstagramAccount) {
+    throw new HttpError(
+      400,
+      "No Instagram Business account is linked to any of your Facebook Pages. Link one in Meta Business Settings and try again.",
+    );
   }
 
   return { organizationId };

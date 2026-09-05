@@ -347,7 +347,7 @@ model WhatsAppTemplate {
   language            String                 @default("en_US")
   bodyText            String
   variableCount       Int                    @default(0)
-  status              WhatsAppTemplateStatus @default(APPROVED)
+  status              WhatsAppTemplateStatus @default(PENDING)
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
 

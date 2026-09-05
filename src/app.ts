@@ -26,6 +26,12 @@ import socialPostsRoutes from "./modules/social/social-post.routes";
 export function createApp() {
   const app = express();
 
+  // Render (like most hosts) puts the app behind a reverse proxy. Without this, Express can't
+  // read the real client IP from X-Forwarded-For, so every request looks like it comes from the
+  // same proxy IP — collapsing IP-keyed rate limits (e.g. the login limiter) into one shared
+  // bucket for the entire app instead of one per real visitor.
+  app.set("trust proxy", 1);
+
   app.use(helmet());
   app.use(cors({ origin: env.WEB_APP_URL, credentials: true }));
   app.use(
