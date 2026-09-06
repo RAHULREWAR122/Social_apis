@@ -14,10 +14,17 @@ import {
 
 const REFRESH_COOKIE_NAME = "refresh_token";
 
+// The frontend (Vercel) and API (Render) live on different domains in production, so this cookie
+// is cross-site from the browser's point of view. SameSite=Lax cookies are withheld from
+// cross-site fetch/XHR (only sent on top-level navigations), so /auth/refresh would never receive
+// it there — every reload/new tab/reopened browser would fail to restore the session even though
+// it's still valid server-side. SameSite=None (requires Secure) fixes that; "lax" is kept for local
+// http dev, where a "none" cookie would be dropped by the browser for lacking Secure/HTTPS.
+const isProduction = env.NODE_ENV === "production";
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: isProduction,
+  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
   // Must be "/" (not scoped to /api/v1/auth) so the Next.js frontend's proxy.ts
   // can detect session presence via request.cookies on any path.
   path: "/",
