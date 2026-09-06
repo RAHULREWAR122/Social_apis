@@ -50,7 +50,8 @@ export async function confirmImport(req: Request, res: Response) {
   } catch {
     throw new HttpError(400, "Invalid mapping payload");
   }
+  const listId = typeof req.body.listId === "string" && req.body.listId ? req.body.listId : undefined;
 
-  const report = await importService.importCsv(req.auth!.organizationId, req.file.buffer, mapping);
+  const report = await importService.importCsv(req.auth!.organizationId, req.file.buffer, mapping, listId);
   res.json({ report });
 }

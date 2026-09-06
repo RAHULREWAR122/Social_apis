@@ -64,6 +64,7 @@ export async function importCsv(
   organizationId: string,
   buffer: Buffer,
   mapping: ColumnMapping,
+  listId?: string,
 ): Promise<ImportReport> {
   const rows: Record<string, string>[] = parse(buffer, {
     columns: true,
@@ -76,6 +77,11 @@ export async function importCsv(
   }
   if (rows.length > 20000) {
     throw new HttpError(400, "CSV import is limited to 20,000 rows per file for now");
+  }
+
+  if (listId) {
+    const list = await prisma.contactList.findFirst({ where: { id: listId, organizationId } });
+    if (!list) throw new HttpError(404, "List not found");
   }
 
   const report: ImportReport = {
@@ -136,6 +142,8 @@ export async function importCsv(
     });
   }
 
+  const listMemberContactIds: string[] = [];
+
   for (const record of toInsert) {
     const existing = await prisma.contact.findFirst({
       where: {
@@ -149,11 +157,20 @@ export async function importCsv(
 
     if (existing) {
       report.duplicatesInDatabase += 1;
+      if (listId) listMemberContactIds.push(existing.id);
       continue;
     }
 
-    await prisma.contact.create({ data: record });
+    const created = await prisma.contact.create({ data: record });
     report.imported += 1;
+    if (listId) listMemberContactIds.push(created.id);
+  }
+
+  if (listId && listMemberContactIds.length > 0) {
+    await prisma.contactListMember.createMany({
+      data: listMemberContactIds.map((contactId) => ({ contactListId: listId, contactId })),
+      skipDuplicates: true,
+    });
   }
 
   return report;
