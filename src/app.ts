@@ -47,7 +47,9 @@ export function createApp() {
   app.use(morgan(env.NODE_ENV === "development" ? "dev" : "combined"));
 
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
-
+  app.head('/health' , (req, res)=>{
+      res.sendStatus(200)
+   })
   // Uploaded post media (images/videos) — Instagram/Facebook/LinkedIn fetch from these URLs when
   // publishing, so the marketing-support frontend (a different origin) must also be able to load
   // them directly in <img>/<video> tags. helmet()'s default Cross-Origin-Resource-Policy:

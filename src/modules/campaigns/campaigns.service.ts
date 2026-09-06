@@ -5,6 +5,7 @@ import { campaignDispatchQueue } from "../../lib/queue";
 import { assertQuotaAvailable } from "../billing/usage.service";
 import { sendEmail } from "./adapters/email-adapter";
 import { sendWhatsAppTemplate } from "./adapters/whatsapp-adapter";
+import { isMetaTestTemplateName } from "../whatsapp/whatsapp.service";
 
 type CampaignInput = {
   name: string;
@@ -167,10 +168,17 @@ async function assertSendable(organizationId: string, campaignId: string) {
 async function assertTemplateApproved(whatsappTemplateId: string | null) {
   if (!whatsappTemplateId) throw new HttpError(400, "Select a WhatsApp template before sending");
   const template = await prisma.whatsAppTemplate.findUnique({ where: { id: whatsappTemplateId } });
-  if (!template || template.status !== "APPROVED") {
+  if (!template) throw new HttpError(400, "WhatsApp template not found");
+  if (isMetaTestTemplateName(template.name)) {
     throw new HttpError(
       400,
-      `WhatsApp template "${template?.name ?? whatsappTemplateId}" isn't approved by Meta yet — get it approved in Meta Business Manager, then mark it APPROVED here before sending.`,
+      `"${template.name}" is Meta's built-in test template — Meta only allows it from the Public Test Number, never from your own business number, regardless of its status here. Create and get approval for a real template instead.`,
+    );
+  }
+  if (template.status !== "APPROVED") {
+    throw new HttpError(
+      400,
+      `WhatsApp template "${template.name}" isn't approved by Meta yet — get it approved in Meta Business Manager, then mark it APPROVED here before sending.`,
     );
   }
 }

@@ -9,6 +9,15 @@ function countTemplateVariables(bodyText: string) {
   return matches.size;
 }
 
+/** Meta's own sample/test templates — these exist in every WhatsApp Business account by default
+ *  and can only be sent from Meta's Public Test Number (error #131058), never from a real
+ *  business number, no matter what status we store for them locally. */
+const META_TEST_TEMPLATE_NAMES = new Set(["hello_world"]);
+
+export function isMetaTestTemplateName(name: string) {
+  return META_TEST_TEMPLATE_NAMES.has(name.trim().toLowerCase());
+}
+
 /** Calls Meta's Graph API with the given credentials before we ever save them — this is manual
  *  credential entry (no OAuth handshake to lean on, unlike Gmail/Meta-social/LinkedIn), so it's the
  *  only place in the app a wrong/expired/debug-only token can get "connected" without ever being
@@ -110,6 +119,34 @@ export async function listTemplates(organizationId: string) {
   });
 }
 
+/** Confirms the template actually exists (by name + language) on the connected WABA before we let
+ *  it be saved locally — otherwise a typo'd language code (e.g. "en" vs "en_US") only surfaces
+ *  later as an opaque send failure instead of at creation time. */
+async function verifyMetaTemplate(businessAccountId: string, accessToken: string, templateName: string, language: string) {
+  let templates: Array<{ name: string; language: string; status: string }>;
+  try {
+    const { data } = await axios.get(`https://graph.facebook.com/${env.WHATSAPP_GRAPH_API_VERSION}/${businessAccountId}/message_templates`, {
+      params: { name: templateName, access_token: accessToken },
+    });
+    templates = data.data ?? [];
+  } catch (err) {
+    const metaMessage = axios.isAxiosError(err) ? err.response?.data?.error?.message : undefined;
+    throw new HttpError(400, `Could not verify WhatsApp template with Meta: ${metaMessage ?? "Unknown Meta error"}`);
+  }
+
+  const template = templates.find((item) => item.name === templateName && item.language === language);
+  if (!template) {
+    throw new HttpError(
+      400,
+      `Template "${templateName}" with language "${language}" was not found on this WhatsApp Business Account in Meta.`,
+    );
+  }
+  if (template.status !== "APPROVED") {
+    throw new HttpError(400, `WhatsApp template "${templateName}" is ${template.status} in Meta, not APPROVED yet.`);
+  }
+  return template;
+}
+
 export async function createTemplate(
   organizationId: string,
   input: { whatsappAccountId: string; name: string; language: string; bodyText: string },
@@ -119,10 +156,20 @@ export async function createTemplate(
   });
   if (!account) throw new HttpError(404, "WhatsApp account not found");
 
+  if (isMetaTestTemplateName(input.name)) {
+    throw new HttpError(
+      400,
+      `"${input.name}" is Meta's built-in test template — it can only be sent from Meta's Public Test Number, never from your own business number. Create your own template and get it approved in Meta Business Manager instead.`,
+    );
+  }
+
   const existing = await prisma.whatsAppTemplate.findFirst({
     where: { organizationId, name: input.name, language: input.language },
   });
   if (existing) throw new HttpError(409, `Template "${input.name}" (${input.language}) already exists`);
+
+  const accessToken = decryptSecret(account.accessTokenEncrypted);
+  await verifyMetaTemplate(account.businessAccountId, accessToken, input.name, input.language);
 
   return prisma.whatsAppTemplate.create({
     data: {
@@ -132,6 +179,7 @@ export async function createTemplate(
       language: input.language,
       bodyText: input.bodyText,
       variableCount: countTemplateVariables(input.bodyText),
+      status: "APPROVED",
     },
   });
 }

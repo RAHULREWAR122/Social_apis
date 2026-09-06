@@ -26,6 +26,8 @@ export async function sendWhatsAppTemplate(input: {
     },
   };
 
+  console.log(`WhatsApp send -> ${input.to}:`, JSON.stringify(body.template));
+
   try {
     const { data } = await axios.post(url, body, {
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
